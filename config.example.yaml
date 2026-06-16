@@ -1,0 +1,40 @@
+# Copy to config.yaml and adjust as needed.
+
+adb_path: adb
+poll_interval_sec: 3
+sms_uri_authority: adbsms
+
+ollama_url: http://127.0.0.1:11434
+ollama_model: llama3.2:3b
+
+reply_mode: immediate  # immediate | scheduled
+auto_reply_enabled: true
+reply_cooldown_sec: 5
+reply_backend: auto  # rules | ollama | auto
+agent_pipeline_enabled: true
+reply_delay_min_sec: 2
+reply_delay_max_sec: 8
+bot_name: ""  # optional — e.g. Steve
+reply_persona: calm
+
+# Do-not-disturb window (24h format, optional — leave empty to disable)
+dnd_start: ""
+dnd_end: ""
+
+whatsapp_enabled: true  # set true to auto-reply via notification shade
+whatsapp_require_network: true  # only poll when PC and phone have network
+
+# Kiswahili training corpus (auto-crawl Swahili websites for offline knowledge)
+crawl_swahili: false  # set true to auto-crawl on startup
+crawl_limit: 200     # max Q&A pairs per crawl session
+
+# Send via your real Messages app (NOT adbsms — adbsms is read-only).
+sms_send_strategies:
+  - respond
+  - compose
+  - intent
+  - isms
+
+db_path: data/conversations.db
+log_path: logs/bot.log
+log_level: INFO
