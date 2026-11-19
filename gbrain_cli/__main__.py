@@ -177,6 +177,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     hosted_parser.add_argument("--interval", type=float, default=3.0)
     hosted_parser.add_argument("--sync-interval", type=float, default=30.0)
+    hosted_parser.add_argument("--heartbeat-interval", type=float, default=30.0)
     hosted_parser.set_defaults(handler=hosted_daemon)
 
     status_parser = subparsers.add_parser("status", help="Show gbrain-cli configuration")

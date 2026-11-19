@@ -221,6 +221,10 @@ export GBRAIN_SERVICE_TOKEN="same-token-as-the-website"
 gbrain-cli hosted-daemon
 ```
 
+The daemon sends a `hosted-cli` heartbeat to `/api/internal/services/heartbeat`
+every 30 seconds. The company admin console shows its status, device count, and
+bridge health. The website must set `GBRAIN_SERVICE_TOKEN` to the same value.
+
 The relay fetches only hosted devices owned by confirmed users, polls their
 dashboard commands, and dispatches SMS through the hosted WSS bridge. The
 website also requires `GBRAIN_CONFIRMED_EMAILS` (or `GBRAIN_ADMIN_EMAILS`) to

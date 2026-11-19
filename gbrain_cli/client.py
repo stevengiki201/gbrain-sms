@@ -90,6 +90,17 @@ class WebsiteClient:
         devices = response.get("devices")
         return devices if isinstance(devices, list) else []
 
+    def service_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        service_token = os.environ.get("GBRAIN_SERVICE_TOKEN", "")
+        if not service_token:
+            raise ApiError("GBRAIN_SERVICE_TOKEN is not set")
+        return _request(
+            f"{self.base_url}/api/internal/services/heartbeat",
+            method="POST",
+            payload=payload,
+            headers={"x-service-token": service_token},
+        )
+
     def next_command(self, device_id: str) -> dict[str, Any] | None:
         query = urllib.parse.urlencode({"deviceId": device_id})
         response = _request(

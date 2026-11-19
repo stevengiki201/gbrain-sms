@@ -84,6 +84,30 @@ def sync_hosted_device(
         website.post_sms_cache(messages)
 
 
+def send_heartbeat(
+    website: WebsiteClient,
+    bridge: HostedBridgeClient,
+    device_count: int,
+) -> None:
+    try:
+        bridge_status = bridge.status()
+        website.service_heartbeat(
+            {
+                "serviceId": "hosted-cli",
+                "status": "healthy",
+                "message": "Hosted relay active",
+                "latencyMs": 0,
+                "version": "0.1.0",
+                "metadata": {
+                    "devices": device_count,
+                    "bridge": bridge_status,
+                },
+            }
+        )
+    except Exception as exc:
+        print(f"heartbeat failed: {exc}")
+
+
 def hosted_daemon(args: Any) -> None:
     website_url = _required_env("GBRAIN_WEBSITE_URL")
     bridge_url = _required_env("GBRAIN_AUDIOLINK_BRIDGE_URL")
@@ -98,10 +122,15 @@ def hosted_daemon(args: Any) -> None:
     ]
     cursors: dict[str, int] = {}
     last_sync: dict[str, float] = {}
+    last_heartbeat = 0.0
     print(f"gbrain-cli hosted daemon started for {len(clients)} hosted device(s)")
 
     while True:
         try:
+            now = time.monotonic()
+            if now - last_heartbeat >= args.heartbeat_interval:
+                send_heartbeat(service_website, bridge, len(clients))
+                last_heartbeat = now
             for device, website in clients:
                 device_id = str(device["id"])
                 try:
