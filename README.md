@@ -197,6 +197,35 @@ gbrain-cli sign-in --server http://localhost:3000
 gbrain-cli daemon
 ```
 
+### Hosted service (no local PC)
+
+A confirmed website account can register a phone from the dashboard QR code.
+The QR contains a short-lived, single-use enrollment token; it never contains a
+password or session cookie. The phone posts that token to the hosted AudioLink
+bridge, which verifies it against the website with `GBRAIN_SERVICE_TOKEN` and
+pairs the phone directly to the server-side bridge.
+
+Run the hosted bridge (existing `python -m bot.main run` server) with:
+
+```bash
+export GBRAIN_WEBSITE_URL="https://gbrain.tech"
+export GBRAIN_SERVICE_TOKEN="same-token-as-the-website"
+```
+
+Run the server-side CLI relay with:
+
+```bash
+export GBRAIN_WEBSITE_URL="https://gbrain.tech"
+export GBRAIN_AUDIOLINK_BRIDGE_URL="https://sms.gbrain.tech"
+export GBRAIN_SERVICE_TOKEN="same-token-as-the-website"
+gbrain-cli hosted-daemon
+```
+
+The relay fetches only hosted devices owned by confirmed users, polls their
+dashboard commands, and dispatches SMS through the hosted WSS bridge. The
+website also requires `GBRAIN_CONFIRMED_EMAILS` (or `GBRAIN_ADMIN_EMAILS`) to
+mark accounts as confirmed.
+
 ---
 
 ## 3. Configuration

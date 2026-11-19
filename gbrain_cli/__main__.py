@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from .client import ApiError, LocalBridgeClient, WebsiteClient
+from .hosted import hosted_daemon
 from .config import (
     clear_config,
     default_device_name,
@@ -169,6 +170,14 @@ def main(argv: list[str] | None = None) -> None:
     daemon_parser.add_argument("--sync-interval", type=float, default=30.0)
     daemon_parser.add_argument("--local-url", default="https://127.0.0.1:8787")
     daemon_parser.set_defaults(handler=daemon)
+
+    hosted_parser = subparsers.add_parser(
+        "hosted-daemon",
+        help="Run the server-side AudioLink relay without a local PC",
+    )
+    hosted_parser.add_argument("--interval", type=float, default=3.0)
+    hosted_parser.add_argument("--sync-interval", type=float, default=30.0)
+    hosted_parser.set_defaults(handler=hosted_daemon)
 
     status_parser = subparsers.add_parser("status", help="Show gbrain-cli configuration")
     status_parser.add_argument("--local-url", default="https://127.0.0.1:8787")

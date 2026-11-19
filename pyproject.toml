@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gbrain-cli"
 version = "0.1.0"
-description = "Connect a local gbrain-sms PC to the GBrain website dashboard"
+description = "Connect gbrain-sms local or hosted AudioLink devices to the GBrain website dashboard"
 requires-python = ">=3.10"
 dependencies = []
 

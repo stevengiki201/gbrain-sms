@@ -14,7 +14,9 @@ certificate.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+import os
 import re
 import secrets
 from dataclasses import asdict
@@ -29,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .errors import AudioLinkError, Forbidden, Unauthorized, Unavailable, ValidationFailed
+from .hosting import verify_enrollment_with_website
 from .operations import AudioLinkOperations
 from .service import AudioLinkService
 from .signaling import (
@@ -54,6 +57,12 @@ from bot.adb_connector import AdbConnector
 from bot.memory_store import normalize_contact
 
 logger = logging.getLogger("gbrain.bridge.api")
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 # --------------------------------------------------------------------- schemas
@@ -113,6 +122,20 @@ class AutoReplyBody(BaseModel):
     enabled: bool
 
 
+class HostedEnrollBody(BaseModel):
+    token: str = Field(min_length=10, max_length=300)
+    device_id: str = Field(min_length=1, max_length=128)
+    device_name: str = Field(default="", max_length=128)
+    platform: str = Field(default="android", max_length=32)
+    app_version: str = Field(default="", max_length=32)
+
+
+class HostedSmsSendBody(BaseModel):
+    website_device_id: str = Field(min_length=1, max_length=128)
+    to_number: str = Field(min_length=1, max_length=32)
+    body: str = Field(min_length=1, max_length=2000)
+
+
 def create_app(service: AudioLinkService, app: FastAPI | None = None) -> FastAPI:
     """Register the bridge API on ``app`` (or a new app for standalone use)."""
     if app is None:
@@ -161,6 +184,12 @@ def create_app(service: AudioLinkService, app: FastAPI | None = None) -> FastAPI
         if not supplied or not secrets.compare_digest(supplied, service.admin_token):
             raise Unauthorized("invalid admin token", code="INVALID_ADMIN_TOKEN")
 
+    def require_service_token(request: Request) -> None:
+        configured = os.environ.get("GBRAIN_SERVICE_TOKEN", "")
+        supplied = request.headers.get("x-gbrain-service", "")
+        if not configured or not supplied or not secrets.compare_digest(supplied, configured):
+            raise Unauthorized("invalid service token", code="INVALID_SERVICE_TOKEN")
+
     async def require_device_token(request: Request) -> str:
         """Accept requests from any paired device on the LAN or the local admin token."""
 
@@ -186,6 +215,7 @@ def create_app(service: AudioLinkService, app: FastAPI | None = None) -> FastAPI
     admin  = APIRouter(prefix="/v1", dependencies=[Depends(require_admin)])
     device = APIRouter(prefix="/v1")   # authenticated per-request via require_device_token
     public = APIRouter(prefix="/v1")
+    hosted = APIRouter(prefix="/v1/hosted", dependencies=[Depends(require_service_token)])
 
     # ------------------------------------------------------------------ public
     @app.get("/")
@@ -243,6 +273,22 @@ def create_app(service: AudioLinkService, app: FastAPI | None = None) -> FastAPI
     @public.post("/pairing/requests/{request_id}/confirm")
     async def pairing_confirm(request_id: str, body: PairingConfirmBody) -> dict:
         return await service.confirm_pairing(request_id, body.code)
+
+    @public.post("/enroll")
+    async def hosted_enroll(body: HostedEnrollBody) -> dict:
+        website = await asyncio.to_thread(
+            verify_enrollment_with_website,
+            body.token,
+            body.device_id,
+            body.device_name,
+            body.platform,
+            body.app_version,
+        )
+        return await service.link_hosted_enrollment(
+            website=website,
+            phone_device_id=body.device_id,
+            phone_name=body.device_name,
+        )
 
     # ---------------------------------------------------------------- management
     @admin.get("/status")
@@ -580,6 +626,42 @@ def create_app(service: AudioLinkService, app: FastAPI | None = None) -> FastAPI
         result = await app.state.operations.execute(body.operation, body.params)
         return {"operation": body.operation, "ok": True, "result": result}
 
+    @hosted.get("/status")
+    async def hosted_status() -> dict:
+        return await service.status()
+
+    @hosted.get("/devices")
+    async def hosted_devices() -> dict:
+        return {"devices": await service.hosted_enrollments()}
+
+    @hosted.get("/events")
+    async def hosted_events(website_device_id: str, after: int = 0) -> dict:
+        return await service.hosted_events(website_device_id, after)
+
+    @hosted.post("/sms/send")
+    async def hosted_sms_send(body: HostedSmsSendBody) -> dict:
+        enrollments = await service.hosted_enrollments()
+        enrollment = next(
+            (
+                item
+                for item in enrollments
+                if item.get("website_device_id") == body.website_device_id
+            ),
+            None,
+        )
+        if enrollment is None:
+            raise HTTPException(404, detail="hosted device is not enrolled")
+        task_id = secrets.token_hex(8)
+        result = await service.send_signal(
+            str(enrollment["phone_device_id"]),
+            {
+                "type": SMS_SEND,
+                "to_number": body.to_number,
+                "body": body.body,
+                "task_id": task_id,
+            },
+        )
+        return {**result, "taskId": task_id}
 
     # -------------------------------------------------------------- SMS inbox / unreplied
     @admin.get("/sms/inbox")
@@ -749,6 +831,7 @@ def create_app(service: AudioLinkService, app: FastAPI | None = None) -> FastAPI
     app.include_router(public)
     app.include_router(admin)
     app.include_router(device)
+    app.include_router(hosted)
 
     # ------------------------------------------------------------------ signaling
     @app.websocket("/v1/signaling")
@@ -955,6 +1038,14 @@ async def handle_sms_inbound(
     When auto-reply is enabled and gbrain-sms is configured, generate a reply
     and signal the phone to send it back to the original sender.
     """
+    contact = str(message.get("from_number", "")).strip()
+    body = str(message.get("body", "")).strip()
+    if not contact or not body:
+        logger.warning("sms.inbound missing from_number or body")
+        return
+
+    await _maybe_await(service.record_hosted_sms(device_id, message))
+
     if not service.config.auto_reply_enabled:
         logger.debug("auto_reply disabled — ignoring sms.inbound from %s", device_id)
         return
@@ -963,12 +1054,6 @@ async def handle_sms_inbound(
         logger.warning(
             "sms.inbound received but the GBrain AI backend is not configured"
         )
-        return
-
-    contact = str(message.get("from_number", "")).strip()
-    body = str(message.get("body", "")).strip()
-    if not contact or not body:
-        logger.warning("sms.inbound missing from_number or body")
         return
 
     sms_id = message.get("sms_id")
@@ -1040,6 +1125,7 @@ async def handle_sms_result(
     """Record the phone's real SmsManager result; fail a task that did not send."""
     task_id = str(message.get("task_id") or "")
     ok = bool(message.get("ok", False))
+    await _maybe_await(service.record_hosted_result(device_id, message))
     service._record(
         "sms.result",
         {

@@ -24,6 +24,7 @@ from .audio_devices import AudioDeviceManager
 from .config import AudioLinkConfig
 from .discovery import DiscoveryBrowser, DiscoveredDevice, ServiceAdvertiser
 from .errors import AudioLinkError, Conflict, MediaUnavailable, NotFound, Unavailable
+from .hosting import HostedStore
 from .identity import Identity, load_or_create_identity
 from .media import MediaManager
 from .pairing import PairingManager, PairingRequest
@@ -80,6 +81,7 @@ class AudioLinkService:
         self.audio = AudioDeviceManager()
         self.media = MediaManager(self.config)
         self.admin_token = ""
+        self.hosted = HostedStore(self.config.data_path)
         self._sessions: dict[str, ControlSession] = {}
         self._started_at: float = 0.0
         self._running = False
@@ -270,6 +272,80 @@ class AudioLinkService:
                 "protocol": PROTOCOL,
             },
         }
+
+    async def link_hosted_enrollment(
+        self,
+        *,
+        website: dict,
+        phone_device_id: str,
+        phone_name: str,
+    ) -> dict:
+        identity = self._require_identity()
+        assert self.registry is not None
+        device, token = await self.registry.pair_device(
+            device_id=phone_device_id,
+            name=phone_name or phone_device_id,
+            platform="android",
+        )
+        await self.hosted.link(
+            website_device_id=str(website["deviceId"]),
+            user_id=str(website["userId"]),
+            email=str(website["email"]),
+            phone_device_id=phone_device_id,
+            phone_name=phone_name or phone_device_id,
+            role=str(website.get("role", "confirmed")),
+            paired_at=utcnow_iso(),
+        )
+        self._record(
+            "hosted.enrolled",
+            {
+                "website_device_id": website["deviceId"],
+                "phone_device_id": phone_device_id,
+                "user_id": website["userId"],
+            },
+        )
+        return {
+            "device": device.public(),
+            "token": token,
+            "desktop": {
+                "device_id": identity.device_id,
+                "name": identity.name,
+                "fingerprint": identity.fingerprint,
+                "protocol": PROTOCOL,
+            },
+        }
+
+    async def hosted_enrollments(self) -> list[dict]:
+        self._require_identity()
+        return await self.hosted.list_enrollments()
+
+    async def hosted_events(self, website_device_id: str, after: int = 0) -> dict:
+        self._require_identity()
+        return await self.hosted.events(website_device_id, after)
+
+    async def record_hosted_sms(self, phone_device_id: str, message: dict) -> None:
+        await self.hosted.record_event(
+            phone_device_id,
+            "sms",
+            {
+                "sms_id": str(message.get("sms_id", "")),
+                "from_number": str(message.get("from_number", "")),
+                "body": str(message.get("body", ""))[:4000],
+                "timestamp_ms": message.get("timestamp_ms", 0),
+            },
+        )
+
+    async def record_hosted_result(self, phone_device_id: str, message: dict) -> None:
+        await self.hosted.record_event(
+            phone_device_id,
+            "result",
+            {
+                "task_id": str(message.get("task_id", "")),
+                "ok": bool(message.get("ok", False)),
+                "to_number": str(message.get("to_number", "")),
+                "error": str(message.get("error", ""))[:300],
+            },
+        )
 
     async def unpair(self, device_id: str) -> dict:
         self._require_identity()

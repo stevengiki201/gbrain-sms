@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import urllib.error
 import urllib.parse
@@ -77,6 +78,17 @@ class WebsiteClient:
                 "fingerprint": fingerprint,
             },
         )
+
+    def service_devices(self) -> list[dict[str, Any]]:
+        service_token = os.environ.get("GBRAIN_SERVICE_TOKEN", "")
+        if not service_token:
+            raise ApiError("GBRAIN_SERVICE_TOKEN is not set")
+        response = _request(
+            f"{self.base_url}/api/service/devices",
+            headers={"x-service-token": service_token},
+        )
+        devices = response.get("devices")
+        return devices if isinstance(devices, list) else []
 
     def next_command(self, device_id: str) -> dict[str, Any] | None:
         query = urllib.parse.urlencode({"deviceId": device_id})
@@ -169,3 +181,53 @@ class LocalBridgeClient:
 
     def chat(self, message: str) -> dict[str, Any]:
         return self._post("/v1/gbrain/sms/chat", {"message": message})
+
+
+class HostedBridgeClient:
+    def __init__(self, base_url: str, service_token: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        if not service_token:
+            raise ApiError("GBRAIN_SERVICE_TOKEN is not set")
+        self.headers = {"x-gbrain-service": service_token}
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        query = urllib.parse.urlencode(params or {})
+        suffix = f"?{query}" if query else ""
+        return _request(f"{self.base_url}{path}{suffix}", headers=self.headers)
+
+    def _post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return _request(
+            f"{self.base_url}{path}",
+            method="POST",
+            payload=payload or {},
+            headers=self.headers,
+        )
+
+    def status(self) -> dict[str, Any]:
+        return self._get("/v1/hosted/status")
+
+    def devices(self) -> list[dict[str, Any]]:
+        response = self._get("/v1/hosted/devices")
+        devices = response.get("devices")
+        return devices if isinstance(devices, list) else []
+
+    def events(self, website_device_id: str, after: int = 0) -> dict[str, Any]:
+        return self._get(
+            "/v1/hosted/events",
+            {"website_device_id": website_device_id, "after": str(after)},
+        )
+
+    def sms_send(
+        self,
+        website_device_id: str,
+        to_number: str,
+        body: str,
+    ) -> dict[str, Any]:
+        return self._post(
+            "/v1/hosted/sms/send",
+            {
+                "website_device_id": website_device_id,
+                "to_number": to_number,
+                "body": body,
+            },
+        )
