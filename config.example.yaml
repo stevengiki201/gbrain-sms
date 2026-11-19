@@ -1,11 +1,23 @@
 # Copy to config.yaml and adjust as needed.
 
+# Legacy ADB settings — only used when sms_transport is "adb".
 adb_path: adb
 poll_interval_sec: 3
 sms_uri_authority: adbsms
 
+# Single desktop server: Pairing, signaling, SMS and AI all run here over Wi-Fi.
+gbrain_api_port: 8787
+bridge_enabled: true
+bridge_mdns_enabled: true
+bridge_device_name: ""
+bridge_auto_reply_enabled: true
+bridge_pairing_code_ttl_sec: 300
+bridge_data_dir: ""          # empty = folder containing audiolink_admin_token_file
+sms_transport: bridge        # bridge (Wi-Fi phone app) | adb (legacy USB)
+
 ollama_url: http://127.0.0.1:11434
-ollama_model: llama3.2:3b
+ollama_model: gbrain-sms
+ollama_fallback_model: llama3.2:3b
 
 reply_mode: immediate  # immediate | scheduled
 auto_reply_enabled: true
@@ -14,8 +26,8 @@ reply_backend: auto  # rules | ollama | auto
 agent_pipeline_enabled: true
 reply_delay_min_sec: 2
 reply_delay_max_sec: 8
-bot_name: ""  # optional — e.g. Steve
-reply_persona: calm
+bot_name: "Steve"  # optional — e.g. Steve
+reply_persona: funny  # calm | energetic | wise | funny
 
 # Do-not-disturb window (24h format, optional — leave empty to disable)
 dnd_start: ""
@@ -23,6 +35,78 @@ dnd_end: ""
 
 whatsapp_enabled: true  # set true to auto-reply via notification shade
 whatsapp_require_network: true  # only poll when PC and phone have network
+
+# Incoming-call auto-answer (phase 1: answer + optional hang-up; no speech).
+call_answer_enabled: false
+call_answer_start: ""        # daily window start "HH:MM" (empty = any time)
+call_answer_end: ""          # daily window end "HH:MM"
+call_answer_at: ""           # one-off "YYYY-MM-DD HH:MM" or "HH:MM" (today/tomorrow)
+call_answer_contacts: []     # allowlist of numbers; empty = any caller
+call_answer_strategies:      # tried in order
+  - keyevent_call
+  - headsethook
+  - ui_tap
+call_hangup_after_sec: 0     # 0 = do not auto hang up
+
+# Phase 2: spoken greeting after answering. Needs a TTS helper on the phone
+# (Termux + Termux:API, or a helper app) or a PC TTS engine for pc_tts.
+call_tts_enabled: false
+call_greeting: ""            # empty = built-in default greeting
+call_tts_strategies:         # tried in order
+  - termux                    # termux-tts-speak on the phone
+  - helper_intent            # custom helper app service (see call_tts_helper_action)
+  - pc_tts                   # synthesize on PC, push + play over speakerphone
+call_tts_helper_action: com.gbrain.sms.SPEAK
+call_tts_command: ""          # optional PC command, e.g. "espeak-ng -w {out} {text}"
+call_tts_volume: 12          # raise media volume before speaking (0 = leave unchanged)
+call_speakerphone: true      # enable speakerphone so the caller hears TTS
+
+# Phase 3: outgoing calls (dial + optional spoken message)
+call_dial_strategies:        # tried in order
+  - intent_call              # ACTION_CALL intent
+  - dialer_keyevent          # open the dialer, then press the call key
+call_dial_timeout_sec: 20    # seconds to wait for the call to connect
+call_outgoing_message: ""    # spoken to the callee after connecting (empty = built-in default)
+call_outgoing_delay_sec: 6   # wait for the callee to answer before speaking
+call_outgoing_repeat: 2      # repeat the message in case they answer late
+
+# Phase 4: real-time voice conversation on calls (acoustic bridge)
+# The phone sits on speakerphone next to this computer: the PC microphone
+# hears the caller and the PC speakers feed the phone's microphone.
+voice_enabled: false         # set true after `voice-selftest` passes
+
+# Transport for that audio.
+#   local     — the acoustic bridge above (PC mic + PC speakers in the room)
+#   audiolink — carry caller and reply audio over GBrain AudioLink's WebRTC
+#               session instead. Needs audiolink running on this PC and the
+#               phone paired; two null sinks are created automatically
+#               (gbrain-call for caller audio, gbrain-tts for our replies).
+voice_transport: local       # local | audiolink
+audiolink_url: https://127.0.0.1:8787
+audiolink_admin_token_file: ~/.local/share/gbrain/audiolink/admin.token
+audiolink_ca_file: ~/.local/share/gbrain/audiolink/tls/cert.pem
+audiolink_device_id: ""      # empty = the first paired phone
+audiolink_call_sink: gbrain-call
+audiolink_tts_sink: gbrain-tts
+voice_sample_rate: 16000
+voice_input_device: auto     # PipeWire node / ALSA device, or auto
+voice_output_device: auto
+voice_language: auto         # auto | en | sw
+voice_stt_model: small       # tiny|base|small|medium — medium is ~2.6x slower, much better Swahili
+voice_model_dir: data/models
+voice_tts_provider: espeak   # espeak (installed) | piper (more natural)
+voice_tts_voice: ""          # espeak voice e.g. sw; empty = from language
+voice_tts_command: ""        # optional "<cmd> {out} {text}"
+voice_piper_binary: piper    # used only if the piper-tts python package is missing
+voice_piper_model: ""        # path to a Piper .onnx voice, e.g. tools/voice/voices/sw_CD/sw_CD-lanfrica-medium.onnx
+voice_vad_enabled: true
+voice_vad_threshold: 0.012   # RMS 0..1 — raise in a noisy room
+voice_vad_silence_ms: 450    # silence that ends the caller's turn
+voice_vad_min_speech_ms: 250
+voice_interrupt_enabled: true
+voice_echo_cancellation: true  # drop capture while replying (half-duplex)
+voice_greeting: ""           # empty = built-in spoken greeting
+voice_system_prompt: ""      # extra instructions for spoken replies
 
 # Kiswahili training corpus (auto-crawl Swahili websites for offline knowledge)
 crawl_swahili: false  # set true to auto-crawl on startup

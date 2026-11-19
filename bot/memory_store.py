@@ -338,6 +338,22 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    def list_contacts(self) -> list[dict]:
+        """Return distinct contacts with last activity and message count, most recent first."""
+        rows = self._conn.execute(
+            """
+            SELECT contact, MAX(timestamp) as last_ts, COUNT(*) as count
+            FROM messages
+            GROUP BY contact
+            ORDER BY last_ts DESC
+            LIMIT 100
+            """
+        ).fetchall()
+        return [
+            {"contact": r["contact"], "last_ts": r["last_ts"], "count": r["count"]}
+            for r in rows
+        ]
+
     def is_sms_replied(self, sms_id: int) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM sms_replies WHERE sms_id = ?", (sms_id,)

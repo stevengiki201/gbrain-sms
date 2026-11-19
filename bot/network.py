@@ -23,7 +23,7 @@ def host_has_network(timeout: float = 2.0) -> bool:
 
 def device_has_network(adb_run, *, timeout_sec: int = 2) -> bool:
     """
-    True when the USB-connected phone reports network access.
+    True when the ADB-connected phone reports network access.
     adb_run: callable like AdbConnector._run_adb
     """
     try:

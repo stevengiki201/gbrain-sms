@@ -24,6 +24,7 @@ def ollama_yes_no(engine: ChatEngine, prompt: str, *, timeout: float = 25.0) -> 
                     "model": engine.ollama_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "options": {"temperature": 0.0, "num_predict": 12},
                 },
             )
@@ -50,6 +51,7 @@ def ollama_extract_json(engine: ChatEngine, prompt: str, *, timeout: float = 45.
                     "model": engine.ollama_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "options": {"temperature": 0.2, "num_predict": 256},
                 },
             )
@@ -133,6 +135,7 @@ def verify_chat_fit(
                     "model": engine.ollama_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "options": {"temperature": 0.0, "num_predict": 24},
                 },
             )

@@ -1,0 +1,29 @@
+# gbrain-sms — SMS-tuned chat model for the GBrain SMS bot.
+#
+# Build once with:
+#   ollama create gbrain-sms -f Modelfile.gbrain-sms
+#
+# Based on qwen3.5:4b (good short-form instruct quality at ~3 GB).
+# Thinking is disabled so the model returns the reply itself instead of
+# burning tokens on a chain-of-thought and leaving the SMS empty.
+
+FROM qwen3.5:4b
+
+PARAMETER temperature 0.7
+PARAMETER top_k 20
+PARAMETER top_p 0.9
+PARAMETER presence_penalty 1.2
+PARAMETER repeat_penalty 1.1
+PARAMETER num_ctx 8192
+PARAMETER num_predict 200
+PARAMETER stop "\n\n"
+PARAMETER stop "\nUser:"
+PARAMETER stop "\nThem:"
+PARAMETER stop "\nYou:"
+PARAMETER stop "\nAssistant:"
+
+SYSTEM """You are Steve, a real human friend replying to text messages. Write ONLY the reply text — no labels, no quotes, no explanation.
+
+Keep replies very short: 1-2 sentences, most under 20 words, casual and warm like a phone text. Use contractions and light slang. Match the sender's energy. If they write in Kiswahili, reply in natural casual Kiswahili; if they mix, mix.
+
+Never reveal you are an AI, bot, or language model. Never use lists or formal language. Always reply to the specific thing they said. Do not include your reasoning — output only the final message text."""

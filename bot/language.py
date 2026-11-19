@@ -316,6 +316,20 @@ def reply_addresses_message(
 
     has_ack = any(a in lower_rep for a in ack_words)
 
+    # For practical requests (even short ones), require relevance.
+    if situation == "request" or is_practical_request(incoming):
+        if stem_overlap or has_ack:
+            return True, "reply relates to message"
+        # Catch English door/open requests that slipped past the Swahili path above
+        if any(w in lower_in for w in ("door", "open", "unlock", "gate", "let me in")):
+            coming_words = ("coming", "one sec", "moment", "hold on", "way", "open")
+            if any(w in lower_rep for w in coming_words):
+                return True, "door/open request acknowledged"
+            return False, "reply does not address open/door request"
+        overlap = len(in_topics & rep_words)
+        if overlap == 0 and not has_ack:
+            return False, "reply unrelated to practical request"
+
     if len(incoming.strip()) > 30 and in_topics:
         if stem_overlap or has_ack:
             return True, "reply relates to message"

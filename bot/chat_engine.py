@@ -135,6 +135,7 @@ class ChatEngine:
         memory: MemoryStore,
         ollama_url: str = "http://127.0.0.1:11434",
         ollama_model: str = "llama3.2:3b",
+        ollama_fallback_model: str = "",
         reply_backend: str = "rules",
         bot_name: str = "",
         reply_persona: str = "calm",
@@ -142,6 +143,7 @@ class ChatEngine:
         self.memory = memory
         self.ollama_url = ollama_url.rstrip("/")
         self.ollama_model = ollama_model
+        self.ollama_fallback_model = ollama_fallback_model
         self.reply_backend = reply_backend.lower()
         self.bot_name = bot_name.strip()
         self.reply_persona = reply_persona.lower() if reply_persona else "calm"
@@ -283,129 +285,155 @@ class ChatEngine:
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
-        profile_lines: list[str] = []
-        situation_note = ""
-        examples: list[Any] = []
-        if memory_ctx is not None:
-            profile_lines = getattr(memory_ctx, "profile_lines", []) or []
-            situation_note = getattr(memory_ctx, "situation_note", "") or ""
-            examples = getattr(memory_ctx, "example_replies", []) or []
-            situation = getattr(memory_ctx, "situation", "") or ""
-            reply_lang = getattr(memory_ctx, "language", "") or ""
-            if situation:
-                system += f"\n\nCurrent situation: {situation}."
-            if situation == "request":
-                system += (
-                    "\n\nThey are asking for practical help or a favor. "
-                    "Reply directly to what they asked — agree, decline honestly, "
-                    "or ask a clarifying question. Do not change the topic."
+        # Try the primary model first, then the fallback if it fails.
+        # Do NOT mutate self.ollama_model here — backend_name/check_ollama
+        # must keep reporting the configured primary model.
+        primary_model = self.ollama_model or "gbrain-sms"
+        fallback_model = self.ollama_fallback_model or "llama3.2:3b"
+        models_to_try = list(dict.fromkeys(
+            m for m in [primary_model, fallback_model] if m
+        ))
+
+        for model_try in models_to_try:
+
+            system_copy = system
+            if factual:
+                system_copy += (
+                    "\n\nThey asked a factual or knowledge question. "
+                    "Give a clear, helpful answer in 1-3 short sentences. "
+                    "Be accurate and conversational — not smalltalk."
                 )
-            if situation_note:
-                system += f"\nSituation guidance: {situation_note}"
-            lang_hint = reply_language_instruction(reply_lang)
-            if lang_hint:
-                system += f"\n\n{lang_hint}"
-            if reply_lang in (LANGUAGE_SW, LANGUAGE_MIXED):
-                system += f"\n\n{SWAHILI_STYLE_GUIDE}"
-            if profile_lines:
-                system += "\n\nWhat you know about this person:\n" + "\n".join(
-                    f"- {line}" for line in profile_lines
+
+            messages[0] = {"role": "system", "content": system_copy}
+
+            profile_lines: list[str] = []
+            situation_note = ""
+            examples: list[Any] = []
+            if memory_ctx is not None:
+                profile_lines = getattr(memory_ctx, "profile_lines", []) or []
+                situation_note = getattr(memory_ctx, "situation_note", "") or ""
+                examples = getattr(memory_ctx, "example_replies", []) or []
+                situation = getattr(memory_ctx, "situation", "") or ""
+                if situation:
+                    system_copy += f"\n\nCurrent situation: {situation}."
+                if situation == "request":
+                    system_copy += (
+                        "\n\nThey are asking for practical help or a favor. "
+                        "Reply directly to what they asked — agree, decline honestly, "
+                        "or ask a clarifying question. Do not change the topic."
+                    )
+                if situation_note:
+                    system_copy += f"\nSituation guidance: {situation_note}"
+                lang_hint = getattr(memory_ctx, "language", "") or ""
+                from bot.language import reply_language_instruction
+                if lang_hint:
+                    system_copy += f"\n\n{lang_hint}"
+                if lang_hint in (LANGUAGE_SW, LANGUAGE_MIXED):
+                    system_copy += f"\n\n{SWAHILI_STYLE_GUIDE}"
+                if profile_lines:
+                    system_copy += "\n\nWhat you know about this person:\n" + "\n".join(
+                        f"- {line}" for line in profile_lines
+                    )
+            messages[0] = {"role": "system", "content": system_copy}
+
+            if prefs:
+                pref_lines = "\n".join(f"- {p.key}: {p.value}" for p in prefs)
+                messages.append({
+                    "role": "system",
+                    "content": f"Stored preferences:\n{pref_lines}",
+                })
+
+            if examples:
+                example_text = "\n".join(
+                    f"Them: {ex.inbound_body[:80]}\nYou: {ex.reply_body[:120]}"
+                    for ex in examples[:2]
                 )
-            messages[0] = {"role": "system", "content": system}
+                messages.append({
+                    "role": "system",
+                    "content": f"Past good replies in similar situations:\n{example_text}",
+                })
 
-        if prefs:
-            pref_lines = "\n".join(f"- {p.key}: {p.value}" for p in prefs)
-            messages.append({
-                "role": "system",
-                "content": f"Stored preferences:\n{pref_lines}",
-            })
+            trained = getattr(memory_ctx, "trained_examples", None) if memory_ctx else None
+            if trained:
+                trained_text = "\n\n".join(
+                    f"Training example (use this style/answer when question is similar):\n"
+                    f"Them: {t.inbound_sample[:200]}\n"
+                    f"You: {t.reply_body[:480]}"
+                    + (f"\nNote: {t.notes}" if t.notes else "")
+                    for t in trained[:2]
+                )
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "IMPORTANT — Human-trained responses. When their message is similar, "
+                        "follow these closely:\n" + trained_text
+                    ),
+                })
 
-        if examples:
-            example_text = "\n".join(
-                f"Them: {ex.inbound_body[:80]}\nYou: {ex.reply_body[:120]}"
-                for ex in examples[:2]
-            )
-            messages.append({
-                "role": "system",
-                "content": f"Past good replies in similar situations:\n{example_text}",
-            })
+            reply_lang_for_shots = (
+                getattr(memory_ctx, "language", "") if memory_ctx else ""
+            ) or detect_reply_language(user_message)
+            if reply_lang_for_shots in (LANGUAGE_SW, LANGUAGE_MIXED):
+                for user_ex, bot_ex in SWAHILI_FEW_SHOT[:4]:
+                    messages.append({"role": "user", "content": user_ex})
+                    messages.append({"role": "assistant", "content": bot_ex})
 
-        trained = getattr(memory_ctx, "trained_examples", None) if memory_ctx else None
-        if trained:
-            trained_text = "\n\n".join(
-                f"Training example (use this style/answer when question is similar):\n"
-                f"Them: {t.inbound_sample[:200]}\n"
-                f"You: {t.reply_body[:480]}"
-                + (f"\nNote: {t.notes}" if t.notes else "")
-                for t in trained[:2]
-            )
-            messages.append({
-                "role": "system",
-                "content": (
-                    "IMPORTANT — Human-trained responses. When their message is similar, "
-                    "follow these closely:\n" + trained_text
-                ),
-            })
+            for msg in context:
+                messages.append({
+                    "role": "user" if msg.role == "user" else "assistant",
+                    "content": msg.body,
+                })
 
-        reply_lang_for_shots = (
-            getattr(memory_ctx, "language", "") if memory_ctx else ""
-        ) or detect_reply_language(user_message)
-        if reply_lang_for_shots in (LANGUAGE_SW, LANGUAGE_MIXED):
-            for user_ex, bot_ex in SWAHILI_FEW_SHOT[:4]:
-                messages.append({"role": "user", "content": user_ex})
-                messages.append({"role": "assistant", "content": bot_ex})
+            if not context or context[-1].body != user_message:
+                messages.append({"role": "user", "content": user_message})
 
-        for msg in context:
-            messages.append({
-                "role": "user" if msg.role == "user" else "assistant",
-                "content": msg.body,
-            })
+            temperature = 0.55 if factual else 0.85
+            if reply_lang_for_shots == LANGUAGE_SW:
+                temperature = 0.62
+            elif reply_lang_for_shots == LANGUAGE_MIXED:
+                temperature = 0.68
+            if factual and attempt > 1:
+                temperature = min(0.75, 0.45 + attempt * 0.08)
+            num_predict = 200 if factual else 140
+            if reply_lang_for_shots in (LANGUAGE_SW, LANGUAGE_MIXED):
+                num_predict = max(num_predict, 160)
 
-        if not context or context[-1].body != user_message:
-            messages.append({"role": "user", "content": user_message})
-
-        temperature = 0.55 if factual else 0.85
-        if reply_lang_for_shots == LANGUAGE_SW:
-            temperature = 0.62
-        elif reply_lang_for_shots == LANGUAGE_MIXED:
-            temperature = 0.68
-        if factual and attempt > 1:
-            temperature = min(0.75, 0.45 + attempt * 0.08)
-        num_predict = 200 if factual else 140
-        if reply_lang_for_shots in (LANGUAGE_SW, LANGUAGE_MIXED):
-            num_predict = max(num_predict, 160)
-
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                resp = client.post(
-                    f"{self.ollama_url}/api/chat",
-                    json={
-                        "model": self.ollama_model,
-                        "messages": messages,
-                        "stream": False,
-                        "options": {
-                            "temperature": temperature,
-                            "num_predict": num_predict,
-                            "stop": [
-                                "\nThem:",
-                                "\nYou:",
-                                "\nUser:",
-                                "\nAssistant:",
-                                "\n\n",
-                            ],
+            try:
+                with httpx.Client(timeout=60.0) as client:
+                    resp = client.post(
+                        f"{self.ollama_url}/api/chat",
+                        json={
+                            "model": model_try,
+                            "messages": messages,
+                            "stream": False,
+                            # Reasoning models (qwen3.5, gbrainchat) otherwise
+                            # spend the whole token budget on a thinking trace
+                            # and return empty content. Force a direct answer.
+                            "think": False,
+                            "options": {
+                                "temperature": temperature,
+                                "num_predict": num_predict,
+                                "stop": [
+                                    "\nThem:",
+                                    "\nYou:",
+                                    "\nUser:",
+                                    "\nAssistant:",
+                                    "\n\n",
+                                ],
+                            },
                         },
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                text = (data.get("message") or {}).get("content") or ""
-                if not text and "response" in data:
-                    text = data.get("response") or ""
-                return clean_reply(text) if text else None
-        except httpx.HTTPError as exc:
-            logger.warning("Ollama generation failed: %s", exc)
-            self._ollama_available = False
-            return None
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    text = (data.get("message") or {}).get("content") or ""
+                    if not text and "response" in data:
+                        text = data.get("response") or ""
+                    if text:
+                        return clean_reply(text) if text else None
+            except httpx.HTTPError as exc:
+                logger.warning("Ollama generation failed with model %s: %s", model_try, exc)
+                # Try the next model in the chain; give up after the last one.
+                continue
 
     def _generate_rules(
         self, contact: str, user_message: str, topic: str | None
@@ -461,6 +489,17 @@ class ChatEngine:
                 "Ah I wish I could help but I'm tight right now too. What's it for?",
                 "I don't have much to spare tbh. What happened?",
                 "Sorry bro, I'm also broke. What do you need it for?",
+            ])
+
+        # English door/open requests
+        if any(w in lower for w in ("open the door", "open door", "unlock the door")) or (
+            any(w in lower for w in ("door", "gate", "lock")) and
+            any(w in lower for w in ("open", "unlock", "let me in", "let me"))
+        ):
+            return self._pick([
+                "Sure, one sec — coming to open it.",
+                "On my way, give me a moment.",
+                "Coming now, hold on.",
             ])
 
         if any(g in lower for g in self.GOODBYES) or any(

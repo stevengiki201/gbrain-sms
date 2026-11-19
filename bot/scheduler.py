@@ -13,6 +13,7 @@ from typing import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 SendCallback = Callable[["ScheduledReply"], Awaitable[bool]]
+CallCallback = Callable[["ScheduledCall"], Awaitable[None]]
 
 
 @dataclass
@@ -26,6 +27,20 @@ class ScheduledReply:
     whatsapp_contact_uri: str = ""
     whatsapp_user_id: int | None = None
     whatsapp_chat_uri: str = ""
+    task_type: str = "sms"
+
+
+@dataclass
+class ScheduledCall:
+    contact: str
+    number: str
+    message: str
+    send_at: datetime
+    source: str = "app"
+    task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    speak_delay_sec: float = 6.0
+    repeat: int = 1
+    task_type: str = "call"
 
 
 @dataclass
@@ -41,8 +56,10 @@ class ResponseScheduler:
         send_callback: SendCallback,
         dnd_start: str = "",
         dnd_end: str = "",
+        call_callback: CallCallback | None = None,
     ) -> None:
         self._send_callback = send_callback
+        self._call_callback = call_callback
         self._dnd_start = _parse_time(dnd_start)
         self._dnd_end = _parse_time(dnd_end)
         self._queue: asyncio.PriorityQueue[_QueueItem] = asyncio.PriorityQueue()
@@ -155,13 +172,22 @@ class ResponseScheduler:
                 continue
 
             try:
-                success = await self._send_callback(task)
-                if success:
-                    logger.info("Scheduled reply %s sent", task.task_id)
+                if getattr(task, "task_type", "sms") == "call":
+                    if self._call_callback is not None:
+                        await self._call_callback(task)
+                        logger.info("Scheduled call %s dispatched", task.task_id)
+                    else:
+                        logger.warning(
+                            "Scheduled call %s has no call_callback; dropping", task.task_id
+                        )
                 else:
-                    logger.error("Scheduled reply %s failed to send", task.task_id)
+                    success = await self._send_callback(task)
+                    if success:
+                        logger.info("Scheduled reply %s sent", task.task_id)
+                    else:
+                        logger.error("Scheduled reply %s failed to send", task.task_id)
             except Exception:
-                logger.exception("Error sending scheduled reply %s", task.task_id)
+                logger.exception("Error executing scheduled task %s", task.task_id)
             finally:
                 self._tasks.pop(task.task_id, None)
 

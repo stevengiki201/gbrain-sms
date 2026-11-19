@@ -1,22 +1,60 @@
-# USB SMS Chatbot
+# GBrain SMS
 
-A Python chatbot that runs on your Linux PC and communicates with an Android phone over USB via ADB. It reads incoming SMS (via the [adbsms](https://github.com/gonodono/adbsms) companion app), generates human-like replies using Ollama or a rule-based fallback, remembers past conversations locally, and supports scheduled responses.
+A Python chatbot that runs on your Linux PC and talks to an Android phone over
+the **local Wi-Fi network** — no USB cable and no ADB required. The phone runs
+the GBrain AudioLink companion app, discovers the PC over mDNS, pairs once with a
+6-digit code, and keeps an authenticated WebSocket open for SMS.
+
+The bot reads incoming SMS on the phone, generates human-like replies with Ollama
+or a rule-based fallback, remembers past conversations locally, and supports
+scheduled responses and do-not-disturb windows.
 
 ## Features
 
-- **ADB SMS read/send** — polls inbox via `content://adbsms`, sends via intent or `service call isms`
-- **Human-like replies** — Ollama local LLM with casual tone; rule-based fallback when offline
+- **Wi-Fi SMS read/send** — the phone sends `sms.inbound` and executes `sms.send`
+  through `SmsManager`; the PC never touches ADB for normal SMS
+- **No USB required** — automatic mDNS discovery on the same LAN, TLS-pinned
+  pairing, and an authenticated WSS signaling channel
+- **Human-like replies** — Ollama local LLM with casual tone; rule-based fallback
+  when offline
 - **Local memory** — SQLite storage with keyword retrieval and preference learning
 - **Scheduled replies** — delay responses to a specific time; DND window support
 - **Stability** — auto-reconnect on disconnect, deduplication, rotating logs
+- **Optional legacy ADB** — calls, WhatsApp notification replies, and the old
+  `adb` SMS transport still work if you plug in a USB cable
+
+## How the Wi-Fi bridge works
+
+```
+┌─────────────┐    mDNS _gbrain-alink._tcp.local.    ┌──────────────┐
+│  Linux PC   │ ◄──────────────────────────────────► │ Android phone│
+│  bot.main   │   HTTPS :8787  pairing + identity    │ AudioLink app│
+│  run        │   WSS   :8787  /v1/signaling         │              │
+└─────────────┘                                      └──────────────┘
+        ▲                                                    │
+        │  sms.inbound  (phone → PC)                         │
+        └──────────────  sms.send  (PC → phone) ─────────────┘
+```
+
+1. `python -m bot.main run` starts one HTTPS server on `0.0.0.0:8787` with a
+   self-signed certificate and advertises it over mDNS.
+2. The Android app discovers the PC on the same Wi-Fi network and pins the
+   advertised certificate fingerprint.
+3. The PC shows a 6-digit pairing code in the log; enter it in the app.
+4. The app opens an authenticated WebSocket. Incoming SMS arrives as
+   `sms.inbound`; generated replies go back as `sms.send` and are sent with the
+   phone's own `SmsManager`.
+5. Scheduled messages use the same socket.
 
 ## Project layout
 
 ```
 gbrain-sms/
 ├── bot/
-│   ├── main.py              # CLI + event loop
-│   ├── adb_connector.py     # ADB device, SMS, WhatsApp notifs
+│   ├── main.py              # CLI + event loop + Wi-Fi bridge bootstrap
+│   ├── api.py               # HTTPS API mounted with the bridge
+│   ├── bridge/              # mDNS, pairing, TLS, signaling, SMS tasks
+│   ├── adb_connector.py     # legacy USB/ADB path
 │   ├── chat_engine.py       # Ollama + rule fallback
 │   ├── memory_store.py      # SQLite persistence
 │   ├── scheduler.py         # Async delayed send queue
@@ -34,25 +72,11 @@ gbrain-sms/
 
 ```bash
 sudo apt update
-sudo apt install android-tools-adb python3 python3-venv python3-pip
+sudo apt install python3 python3-venv python3-pip
 ```
 
-### USB udev rules (optional but recommended)
-
-If `adb devices` shows `no permissions`, add a udev rule:
-
-```bash
-# Find your phone vendor ID
-lsusb
-
-# Create rule (replace VENDOR_ID)
-echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="VENDOR_ID", MODE="0666", GROUP="plugdev"' | \
-  sudo tee /etc/udev/rules.d/51-android.rules
-
-sudo usermod -aG plugdev $USER
-sudo udevadm control --reload-rules
-# Replug USB cable after logging out/in
-```
+`android-tools-adb` is only needed if you plan to use the optional legacy USB
+path (calls, WhatsApp notifications, or `sms_transport: adb`).
 
 ### Python environment
 
@@ -76,123 +100,105 @@ If Ollama is not running, the bot automatically falls back to rule-based replies
 
 ---
 
-## 2. Android phone setup (ADB + adbsms)
+## 2. Android phone setup (Wi-Fi only)
 
-### Enable USB debugging
+### Install the GBrain AudioLink companion app
 
-1. Open **Settings → About phone** → tap **Build number** 7 times
-2. Go to **Developer options** → enable **USB debugging**
-3. Connect phone via USB → accept the RSA fingerprint prompt
+Install the app from the sibling `audiolink/android/` project (build the debug
+APK or install the release APK). The app is the only phone-side component you
+need.
 
-### Verify ADB connection
+### Permissions
 
-```bash
-adb devices
-```
+Open the app and grant:
 
-Expected output:
+1. **SMS** permissions (`READ_SMS`, `RECEIVE_SMS`, `SEND_SMS`)
+2. **Notifications** (so you can see connection state)
+3. **Local network / mDNS** access if your Android version asks for it
 
-```
-List of devices attached
-XXXXXXXX    device
-```
+Disable battery optimization for the app so the WebSocket stays alive in the
+background.
 
-If you see `unauthorized`, check the phone screen for the debugging prompt.
+### Pair over Wi-Fi
 
-### Install adbsms companion app
+1. Make sure the PC and phone are on the **same Wi-Fi/LAN**.
+2. Start the bot on the PC:
 
-Modern Android blocks direct `content://sms` access from the shell. Install [gonodono/adbsms](https://github.com/gonodono/adbsms):
+   ```bash
+   source .venv/bin/activate
+   python -m bot.main run
+   ```
 
-1. Download the APK from the [releases page](https://github.com/gonodono/adbsms/releases)
-2. Install: `adb install adbsms.apk`
-3. Open the app on your phone and grant **READ_SMS** permission
+3. In the Android app, tap **Search** (or **Discover**). The PC appears by name.
+4. A 6-digit code is printed in the PC log:
 
-### Verify SMS read access
+   ```
+   pairing request from <phone> (<device_id>): show code 123456 to the user
+   ```
 
-```bash
-adb shell content query --uri content://adbsms/inbox \
-  --projection address:body --sort "date DESC"
-```
+5. Type that code into the app and confirm. The app stores a bearer token and
+   pins the TLS certificate.
+6. Once connected, the app reports online in the PC log and `status` output.
 
-You should see rows like `Row: address=+123..., body=Hello`.
+No USB cable, udev rules, or `adb devices` step is involved.
 
-### Test SMS send
-
-**Recommended — use the bot CLI** (verifies delivery in the sent folder):
-
-```bash
-python -m bot.main send --to +255772691677 --msg "Test from ADB"
-```
-
-The bot tries `intent` → `compose` → `isms` and only reports success when the message appears in **adbsms sent**. The `isms` method often logs success without actually delivering on modern Android.
-
-**Manual ADB tests** — note that `adb shell` splits on spaces, so multi-word bodies break unless quoted:
+### Verify from the PC
 
 ```bash
-# Single-word body (works without extra quoting)
-adb shell am start -a android.intent.action.SENDTO -d sms:+255772691677 \
-  --es sms_body Test --ez exit_on_sent true
-adb shell input keyevent 66
-
-# Multi-word body — wrap entire command in single quotes on the host
-adb shell 'am start -a android.intent.action.SENDTO -d sms:+255772691677 --es sms_body "Test from ADB" --ez exit_on_sent true'
-adb shell input keyevent 66
-
-# Headless send via isms (no UI; may be blocked on some devices)
-adb shell service call isms 5 i32 0 s16 "com.android.mms.service" s16 "null" \
-  s16 "+255772691677" s16 "null" s16 "Test from ADB" s16 "null" s16 "null" i32 0 i64 0
+python -m bot.main status
 ```
 
-The SMS app may flash briefly with intent/compose methods — this is normal.
+You should see `SMS transport: bridge`, `Wi-Fi bridge: enabled`, and
+`Paired phones: 1`.
 
-### WhatsApp auto-reply (optional)
+### Test sending over Wi-Fi
 
-WhatsApp replies read incoming messages from the **notification shade** and reply without you typing. Enable in `config.yaml`:
+With `python -m bot.main run` still active in another terminal:
 
-```yaml
-whatsapp_enabled: true
+```bash
+python -m bot.main send --to +255772691677 --msg "Test over Wi-Fi"
 ```
 
-**Phone requirements:**
-
-1. WhatsApp installed and logged in
-2. **Notifications enabled** for WhatsApp (Settings → Apps → WhatsApp → Notifications)
-3. Incoming messages must show a notification (not silenced / DND)
-4. Phone screen can be off, but direct reply works best while the notification is still visible
-
-**How it works:**
-
-1. Bot polls `adb shell dumpsys notification --noredact`
-2. Parses new WhatsApp message text and sender name
-3. Generates a reply (Ollama or rules)
-4. Sends via **DirectReply** (silent, no app open) or opens the chat and types if that fails
-
-**Limitations:**
-
-- Only works while the WhatsApp notification is active (usually a few minutes)
-- Group chats reply to the group thread (contact name = group title)
-- If DirectReply is blocked by your Android version, the UI fallback briefly opens WhatsApp
-- Restart the bot after changing `whatsapp_enabled`
+The CLI posts to the local bridge API, the PC pushes `sms.send` to the paired
+phone, and the phone sends the SMS with its own SIM. If no phone is paired the
+command tells you to pair first.
 
 ---
 
 ## 3. Configuration
 
-Edit `config.yaml` (copied from `config.example.yaml`):
+Edit `config.yaml` (copied from `config.example.yaml`). The Wi-Fi-relevant keys:
 
+| Key | Description |
+| --- | --- |
+| `sms_transport` | `bridge` for Wi-Fi (default); `adb` for legacy USB |
+| `gbrain_api_port` | HTTPS/WSS port for pairing, signaling, and SMS (default `8787`) |
+| `bridge_enabled` | Enable the AudioLink bridge (default `true`) |
+| `bridge_mdns_enabled` | Advertise and browse with mDNS (default `true`) |
+| `bridge_device_name` | Optional display name for the PC on the network |
+| `bridge_auto_reply_enabled` | Let the bridge generate replies for inbound SMS |
+| `bridge_pairing_code_ttl_sec` | How long the 6-digit pairing code stays valid |
+| `poll_interval_sec` | Poll cadence for the legacy ADB path |
+| `auto_reply_enabled` | Enable/disable automatic replies |
+| `ollama_model` | Model name for Ollama |
+| `dnd_start` / `dnd_end` | Do-not-disturb window (e.g. `22:00` / `07:00`) |
+| `reply_cooldown_sec` | Minimum seconds between replies to the same contact |
 
-| Key                     | Description                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------- |
-| `poll_interval_sec`     | How often to check for new SMS (default: 3)                                                       |
-| `auto_reply_enabled`    | Enable/disable automatic replies                                                                  |
-| `ollama_model`          | Model name for Ollama                                                                             |
-| `dnd_start` / `dnd_end` | Do-not-disturb window (e.g. `22:00` / `07:00`)                                                    |
-| `whatsapp_enabled`      | Poll notification shade and auto-reply to WhatsApp messages                                       |
-| `reply_cooldown_sec`    | Minimum seconds between replies to same contact                                                   |
-| `sms_send_strategies`   | Send methods in order. Default `[isms]` = silent/headless. Add `intent`/`compose` as UI fallbacks |
+Environment overrides work the same way: `BOT_AUTO_REPLY_ENABLED=false`,
+`BOT_POLL_INTERVAL_SEC=5`, etc.
 
+### Optional legacy ADB keys
 
-Environment overrides: `BOT_AUTO_REPLY_ENABLED=false`, `BOT_POLL_INTERVAL_SEC=5`, `BOT_SMS_SEND_STRATEGIES=isms,intent,compose`, etc.
+Only used when `sms_transport: adb`, or when `whatsapp_enabled` /
+`call_answer_enabled` are on:
+
+| Key | Description |
+| --- | --- |
+| `adb_path` | Path to the `adb` binary (default `adb`) |
+| `sms_uri_authority` | `adbsms` or `sms` content provider authority |
+| `whatsapp_enabled` | Poll the notification shade over ADB |
+| `call_answer_enabled` | Answer calls over ADB keyevents |
+| `sms_send_strategies` | ADB send methods: `respond`, `compose`, `intent`, `isms` |
 
 ---
 
@@ -204,7 +210,7 @@ Activate the virtual environment first:
 source .venv/bin/activate
 ```
 
-### Start the bot (main loop)
+### Start the bot and Wi-Fi bridge
 
 ```bash
 python -m bot.main run
@@ -212,14 +218,21 @@ python -m bot.main run
 
 The bot will:
 
-1. Wait for an ADB-connected device
-2. Poll SMS inbox every few seconds
-3. Generate and send replies (or queue them if a time hint is detected)
+1. Start the mDNS advertisement and HTTPS/WSS server on port `8787`
+2. Wait for a paired phone to connect over Wi-Fi
+3. Generate and send replies as `sms.inbound` messages arrive
+4. Queue replies when a time hint is detected
 
 ### Check status
 
 ```bash
 python -m bot.main status
+```
+
+### Show the bridge identity and fingerprint
+
+```bash
+python -m bot.main bridge-identity
 ```
 
 ### Send an SMS manually
@@ -263,7 +276,8 @@ python -m bot.main export --out data/backup.json
 
 ### Natural scheduling in messages
 
-When someone texts "reply at 7pm" or "in 30 minutes", the bot parses the hint and queues the response accordingly.
+When someone texts "reply at 7pm" or "in 30 minutes", the bot parses the hint
+and queues the response accordingly.
 
 Example conversation:
 
@@ -277,43 +291,121 @@ You:  What part was the hardest?
 
 ---
 
-## 5. Troubleshooting
+## 5. Troubleshooting (Wi-Fi)
 
+| Problem | Solution |
+| --- | --- |
+| Phone cannot find the PC | Confirm both are on the same Wi-Fi/LAN and not on a guest or client-isolated network; some routers block mDNS |
+| `mDNS advertising unavailable` in the log | Install/allow mDNS on the PC; check `avahi-daemon` and that UDP `5353` is not blocked |
+| Phone finds the PC but pairing fails | Re-read the 6-digit code from the PC log; codes expire after `bridge_pairing_code_ttl_sec` |
+| `certificate fingerprint mismatch` | The PC regenerated its identity or you paired with a different PC; unpair in the app and pair again |
+| Connection drops when the phone sleeps | Disable battery optimization for the AudioLink app |
+| `No Wi-Fi paired phone reachable` from `send` | Start `python -m bot.main run` and pair the app first; the CLI sends through the running bridge |
+| `connection refused` on port `8787` | Allow TCP `8787` through the PC firewall and make sure the bot is running |
+| SMS auto-reply not firing | Check the app has SMS permissions and the phone is connected in `python -m bot.main status` |
+| Replies look wrong | Try `python -m bot.main try-reply --msg "..."` locally; switch `reply_backend` or install Ollama |
 
-| Problem                                | Solution                                                                                                               |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `adb: command not found`               | Install `android-tools-adb`                                                                                            |
-| Device shows `unauthorized`            | Unplug/replug USB; accept prompt on phone                                                                              |
-| Device keeps disconnecting             | Use a data-capable USB cable; set USB mode to **File transfer / MTP**; run `adb kill-server && adb start-server`       |
-| Empty SMS inbox query                  | Install adbsms; grant READ_SMS permission                                                                              |
-| `Permission Denial` on `content://sms` | Use adbsms URI (`content://adbsms/inbox`) — already configured                                                         |
-| `pkg=from` or `pkg=BODY` in send error | Shell split your message on spaces; use `python -m bot.main send` or wrap the full `am start` command in single quotes |
-| SMS send fails                         | Bot tries isms → intent → compose automatically; check default SMS app permissions                                     |
-| Ollama not used                        | Run `ollama serve`; check `ollama list`; bot falls back to rules                                                       |
-| Duplicate replies                      | Bot deduplicates by SMS `_id`; check `processed_sms` table                                                             |
-| Encoding garbled text                  | Messages are normalized to NFC; check phone locale                                                                     |
+Legacy ADB problems:
 
+| Problem | Solution |
+| --- | --- |
+| `adb: command not found` | Install `android-tools-adb` (legacy path only) |
+| Device shows `unauthorized` | Replug USB and accept the debugging prompt |
+| Empty SMS inbox query | Install the `adbsms` companion app and grant `READ_SMS` |
+| SMS send fails over ADB | Prefer Wi-Fi `bridge`; ADB send varies by OEM and Android version |
 
 Logs are written to `logs/bot.log` (rotating, 2 MB × 3 files).
 
 ---
 
-## 6. Known limitations
+## 6. Real-time voice calls (optional, legacy ADB)
 
-- **adbsms required** on modern Android for reliable SMS read
-- **SMS send via ADB** varies by OEM/Android version; intent method may briefly show the SMS UI
-- **WhatsApp** via notifications is experimental and fragile (needs active notification)
-- **Learning** is local retrieval + preferences, not model fine-tuning
-- **Fully offline** works with rule-based mode; Ollama requires local install but no cloud API
+This feature still uses ADB for call control. A non-rooted Android phone does not
+expose cellular call audio over ADB, and Linux cannot present itself as a
+Bluetooth HFP headset. The supported bridge is acoustic:
+
+```
+caller ── cellular ──> phone on speakerphone ── room ──> PC microphone
+caller <── cellular ── phone microphone <── room ── PC speakers (TTS)
+```
+
+Put the phone on speakerphone next to the computer, unmute the PC microphone
+and speakers, and keep the phone roughly 20–40 cm from the microphone.
+
+### Install the speech runtime
+
+The system Python is PEP 668 managed, so Whisper is installed inside the
+project (the voice engine adds this directory to `sys.path`):
+
+```bash
+python3 -m pip install --target tools/voice/pylibs --upgrade faster-whisper
+sudo apt install pipewire-utils alsa-utils   # pw-record/pw-play or arecord/aplay
+```
+
+The first transcription downloads the Whisper model into `data/models/`
+(`medium` ≈ 1.5 GB, `small` ≈ 460 MB; `tiny`/`base` are faster and less accurate).
+
+Natural TTS (Piper) instead of espeak-ng:
+
+```bash
+python3 -m pip install --target tools/voice/pylibs --upgrade piper-tts
+mkdir -p tools/voice/voices/sw_CD
+# voices: https://huggingface.co/rhasspy/piper-voices  (Swahili: sw/sw_CD)
+# fetch sw_CD-lanfrica-medium.onnx and sw_CD-lanfrica-medium.onnx.json into that folder
+```
+
+Set `voice_tts_provider: piper` and `voice_piper_model: tools/voice/voices/sw_CD/sw_CD-lanfrica-medium.onnx`.
+
+### Use
+
+```bash
+python -m bot.main voice-check                 # devices, STT, TTS, call state
+python -m bot.main voice-selftest --seconds 6  # mic -> Whisper -> LLM -> speakers
+python -m bot.main voice-run                   # live call, Ctrl+C to stop
+python -m bot.main voice-run --hangup-after 90
+```
+
+With `call_answer_enabled: true`, an answered call starts the voice engine
+automatically. Without auto-answer, run `voice-run` while a call is active.
+
+### Limitations of the bridge
+
+- **Half-duplex while replying** — capture is dropped during playback so the
+  bot does not transcribe itself.
+- Echo and room noise degrade recognition; a headset-style microphone aimed at
+  the phone works better than a laptop's built-in array.
+- Swahili accuracy (measured on five natural-voice sentences): word error rate
+  0.35 with `medium` vs 0.53 with `small`.
+- Audio quality on the far end is limited by speakerphone + microphone pickup.
+- The PC must keep running for the bridge to work.
 
 ---
 
-## 7. Dependencies
+## 7. Known limitations
+
+- **mDNS required** — the phone and PC must be on the same LAN and the network
+  must allow multicast DNS for automatic discovery
+- **Battery optimization** can suspend the phone app; disable it for reliable
+  background SMS delivery
+- **WhatsApp and call answering** still use the optional legacy ADB path
+- **Learning** is local retrieval + preferences, not model fine-tuning
+- **Fully offline** works with rule-based mode; Ollama requires a local install
+  but no cloud API
+
+---
+
+## 8. Dependencies
 
 - Python 3.10+
 - `pyyaml` — config file parsing
 - `httpx` — Ollama HTTP client
-- Everything else uses the Python standard library
+- `fastapi`, `uvicorn` — HTTPS/WSS bridge and API
+- `zeroconf` — mDNS discovery
+- `cryptography` — TLS identity and certificate pinning
+- `aiortc`, `av` — optional AudioLink media features
+- Voice engine (optional): `faster-whisper` and `piper-tts` in
+  `tools/voice/pylibs`, `espeak-ng` (bundled in `tools/tts`) as the offline
+  fallback, PipeWire or ALSA utilities
 
 ---
 

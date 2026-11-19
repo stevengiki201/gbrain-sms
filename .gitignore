@@ -6,6 +6,11 @@ dist/
 build/
 data/
 logs/
+tools/tts/*.deb
+tools/tts/root/
+tools/voice/pylibs/
+tools/voice/voices/
+tools/voice/piper/
 config.yaml
 *.db
 *.log
