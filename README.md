@@ -59,7 +59,9 @@ gbrain-sms/
 │   ├── memory_store.py      # SQLite persistence
 │   ├── scheduler.py         # Async delayed send queue
 │   └── config.py            # Config loader
+├── gbrain_cli/              # Website relay agent for the SMS dashboard
 ├── config.example.yaml
+├── pyproject.toml
 ├── requirements.txt
 └── README.md
 ```
@@ -162,6 +164,38 @@ python -m bot.main send --to +255772691677 --msg "Test over Wi-Fi"
 The CLI posts to the local bridge API, the PC pushes `sms.send` to the paired
 phone, and the phone sends the SMS with its own SIM. If no phone is paired the
 command tells you to pair first.
+
+### Remote website dashboard
+
+Install the bundled CLI so this PC can connect to your GBrain website account:
+
+```bash
+pip install -e .
+gbrain-cli sign-in --server https://gbrain.tech
+gbrain-cli daemon
+```
+
+`sign-in` prompts for the password without echoing it. For non-interactive setup,
+set `GBRAIN_CLI_PASSWORD` in the environment instead; do not pass passwords as
+command arguments because process lists expose them. `sign-in` registers this PC
+against your website account. Run it on every PC you want to manage; the
+dashboard supports multiple PCs per user. The daemon makes outbound-only
+requests, so no router port forwarding is needed. It reads the local AudioLink
+admin token and certificate and talks only to `https://127.0.0.1:8787` by default.
+
+On the website, sign in and open `/dashboard/sms`. Each connected PC appears as
+a separate card. When a pairing request is pending on the PC, the daemon forwards
+the **existing 6-digit AudioLink phone pairing code** to the dashboard; enter
+that code in the AudioLink phone app to pair the phone. The dashboard never sees
+the local admin token.
+
+The daemon also caches the phone's SMS inbox and sent folder on the website so
+the browser can show recent messages. To use a different relay during testing:
+
+```bash
+gbrain-cli sign-in --server http://localhost:3000
+gbrain-cli daemon
+```
 
 ---
 
